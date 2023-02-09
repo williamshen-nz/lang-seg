@@ -1,12 +1,7 @@
-import copy
+import functools
 import glob
 import os
-import itertools
-import functools
-import numpy as np
-import torch
-import torch.utils.data
-import torchvision.transforms as torch_transforms
+
 import encoding.datasets as enc_ds
 from PIL import Image
 
@@ -16,7 +11,7 @@ encoding_datasets = {
 }
 
 
-class FolderLoader(enc_ds.ADE20KSegmentation):#(torch.utils.data.Dataset):
+class FolderLoader(enc_ds.ADE20KSegmentation):  # (torch.utils.data.Dataset):
     def __init__(self, root, transform=None):
         self.root = root
         self.transform = transform
@@ -27,7 +22,7 @@ class FolderLoader(enc_ds.ADE20KSegmentation):#(torch.utils.data.Dataset):
         # self.num_class = 150  # ADE20k
 
     def __getitem__(self, index):
-        img = Image.open(self.images[index]).convert('RGB')
+        img = Image.open(self.images[index]).convert("RGB")
         if self.transform is not None:
             img = self.transform(img)
         return img, os.path.basename(self.images[index])
@@ -36,9 +31,27 @@ class FolderLoader(enc_ds.ADE20KSegmentation):#(torch.utils.data.Dataset):
         return len(self.images)
 
 
+class ImagePathLoader(enc_ds.ADE20KSegmentation):
+    def __init__(self, image_paths, transform):
+        assert image_paths, "image_paths cannot be empty"
+        self.image_paths = image_paths
+        self.transform = transform
+
+    def __getitem__(self, index):
+        img = Image.open(self.image_paths[index]).convert("RGB")
+        if self.transform is not None:
+            img = self.transform(img)
+        return img, os.path.basename(self.image_paths[index])
+
+    def __len__(self):
+        return len(self.image_paths)
+
+
 def get_folder_images(img_folder):
     img_paths = []
-    glist = list(glob.glob(img_folder.rstrip("/") + '/*.png')) + list(glob.glob(img_folder.rstrip("/") + '/*.jpg'))
+    glist = list(glob.glob(img_folder.rstrip("/") + "/*.png")) + list(
+        glob.glob(img_folder.rstrip("/") + "/*.jpg")
+    )
     return list(sorted(glist))
 
 
@@ -56,6 +69,10 @@ def get_original_dataset(name, **kwargs):
         print("load", name, "as image directroy for FolderLoader")
         return FolderLoader(name, transform=kwargs["transform"])
     assert False, f"dataset {name} not found"
+
+
+def get_image_path_dataset(image_paths, transform) -> ImagePathLoader:
+    return ImagePathLoader(image_paths, transform)
 
 
 def get_available_datasets():

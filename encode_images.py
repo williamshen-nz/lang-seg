@@ -251,7 +251,7 @@ def get_legend_patch(npimg, new_palette, labels):
         patches.append(red_patch)
     return out_img, patches
 
-def test(args):
+def not_test(args):
 
     module = LSegModule.load_from_checkpoint(
         checkpoint_path=args.weights,
@@ -543,4 +543,4 @@ if __name__ == "__main__":
     args = Options().parse()
     torch.manual_seed(args.seed)
     args.test_batch_size = torch.cuda.device_count() 
-    test(args)
+    not_test(args)
