@@ -6,6 +6,7 @@ from .lseg_vit import (
     _make_pretrained_clip_vitb32_384,
     _make_pretrained_clipRN50x16_vitl16_384,
     forward_vit,
+    _make_fullclip_vitl14_384,
 )
 
 
@@ -20,8 +21,18 @@ def _make_encoder(
     use_vit_only=False,
     use_readout="ignore",
     enable_attention_hooks=False,
-):  
-    if backbone == "clip_vitl16_384": 
+):
+    if backbone == "fullclip_vitl14_384": # full clip
+        clip_pretrained, pretrained = _make_fullclip_vitl14_384(
+            use_pretrained,
+            hooks=hooks,
+            use_readout=use_readout,
+            enable_attention_hooks=enable_attention_hooks,
+        )
+        scratch = _make_scratch(
+            [256, 512, 1024, 1024], features, groups=groups, expand=expand
+        ) 
+    elif backbone == "clip_vitl16_384": 
         clip_pretrained, pretrained = _make_pretrained_clip_vitl16_384(
             use_pretrained,
             hooks=hooks,
@@ -214,6 +225,7 @@ class FeatureFusionBlock(nn.Module):
 
         output = nn.functional.interpolate(
             output, scale_factor=2, mode="bilinear", align_corners=True
+            # output, scale_factor=2, mode="bilinear", align_corners=False
         )
 
         return output
@@ -301,6 +313,7 @@ class FeatureFusionBlock_custom(nn.Module):
         bn=False,
         expand=False,
         align_corners=True,
+        # align_corners=False,
     ):
         """Init.
 

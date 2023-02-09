@@ -9,6 +9,7 @@ import torchvision.transforms as transforms
 from argparse import ArgumentParser
 
 import pytorch_lightning as pl
+import torchmetrics
 
 from data import get_dataset, get_available_datasets
 
@@ -37,11 +38,11 @@ class LSegmentationModule(pl.LightningModule):
         self.enabled = False #True mixed precision will make things complicated and leading to NAN error
         self.scaler = amp.GradScaler(enabled=self.enabled)
 
-    def forward(self, x):
-        return self.net(x)
+    def forward(self, x, labelset="", return_feature=False):
+        return self.net(x, labelset=labelset, return_feature=return_feature)
 
-    def evaluate(self, x, target=None):
-        pred = self.net.forward(x)
+    def evaluate(self, x, target=None, return_feature=False):
+        pred = self.net.forward(x, return_feature=return_feature)
         if isinstance(pred, (tuple, list)):
             pred = pred[0]
         if target is None:
@@ -61,12 +62,39 @@ class LSegmentationModule(pl.LightningModule):
         inter, union = batch_intersection_union(pred.data, target.data, self.nclass)
 
         return correct, labeled, inter, union
-    
+
+    def sample_negative_label(self):
+        labels = [
+            "others",
+            "other",
+            "etc",
+            "any others",
+            "remainder",
+        ]
+        return labels[np.random.randint(len(labels))]
+
+    #def sample_positive_template(self, phrase):
+    #    labels = [
+    #        "{}",
+    #    ]
+    #    return labels[np.random.randint(len(labels))].format(phrase)
 
     def training_step(self, batch, batch_nb):
-        img, target = batch
+        if len(batch) == 2:
+            img, target = batch
+            labelset = ""
+        else:
+            assert len(batch) == 3
+            img, phrase, target = batch
+            assert len(phrase) == 1, ("batchsize should be 1 now.", phrase)
+            phrase = phrase[0]
+            labelset = [self.sample_negative_label(), phrase]
+            # print(img.shape, target.shape)
+            # print(phrase)
+            # print(torch.unique(target, return_counts=True))
         with amp.autocast(enabled=self.enabled):
-            out = self(img)
+            # out = self(img)
+            out = self(img, labelset=labelset)
             multi_loss = isinstance(out, tuple)
             if multi_loss:
                 loss = self.criterion(*out, target)
@@ -84,8 +112,22 @@ class LSegmentationModule(pl.LightningModule):
         self.log("train_acc_epoch", self.train_accuracy.compute())
 
     def validation_step(self, batch, batch_nb):
-        img, target = batch
-        out = self(img) 
+        if len(batch) == 2:
+            img, target = batch
+            #print(img.shape, target.shape, torch.unique(target), "ppp")
+            #torch.Size([1, 3, 480, 480]) torch.Size([1, 480, 480]) tensor([ -1,   1,   6,  11,  12,  40,  41,  43,  83, 123, 127, 136, 138, 149]
+            out = self(img)
+        else:
+            assert len(batch) == 3
+            img, phrase, target = batch
+            assert len(phrase) == 1, ("batchsize should be 1 now.", phrase)
+            phrase = phrase[0]
+            # print(img.shape, target.shape, "ppp")
+            # print([phrase, type(phrase)], "ppppppp")
+            # torch.Size([1, 3, 480, 480]) torch.Size([1, 1, 480, 480]) ppp
+            #[[('stainless steel faucet',)], <class 'list'>] ppppppp
+            out = self(img, labelset=["other", phrase])
+            # print(out.shape)
         multi_loss = isinstance(out, tuple)
         if multi_loss:
             val_loss = self.criterion(*out, target)
@@ -118,8 +160,39 @@ class LSegmentationModule(pl.LightningModule):
 
     def configure_optimizers(self):
         params_list = [
-            {"params": self.net.pretrained.parameters(), "lr": self.base_lr},
+            # {"params": self.net.pretrained.parameters(), "lr": self.base_lr},
+            {"params": self.net.pretrained.parameters(), "lr": self.base_lr * 0.1},
+            # {"params": self.net.pretrained.parameters(), "lr": self.base_lr},
+            # {"params": self.net.pretrained.parameters(), "lr": self.base_lr},
         ]
+        print(list(sorted(set([n.replace(".weight", ".*").replace(".bias", ".*").replace("model.", "-") for n, p in self.net.pretrained.named_parameters()]))), "updated")
+        if getattr(self.net, "reduce_text_feature", None) is not None:
+            print("Found reduce_text_feature")
+            print(self.net.reduce_text_feature)
+            params_list.append(
+                {"params": self.net.reduce_text_feature.parameters(), "lr": self.base_lr}
+            )
+        else:
+            print("No reduce_text_feature")
+        if hasattr(self.net, "prefix_embeddings"):
+            print("Found prefix_embeddings")
+            print(self.net.prefix_embeddings)
+            params_list.append(
+                # {"params": [self.net.prefix_embeddings], "lr": self.base_lr * 0.1}
+                {"params": [self.net.prefix_embeddings], "lr": self.base_lr}
+            )
+        if hasattr(self.net, "logit_other_threshold"):
+            print("Found logit_other_threshold")
+            print(self.net.logit_other_threshold)
+            params_list.append(
+                {"params": [self.net.logit_other_threshold], "lr": self.base_lr}
+            )
+        if hasattr(self.net, "logit_scale"):
+            print("Found logit_scale")
+            print(self.net.logit_scale)
+            params_list.append(
+                {"params": [self.net.logit_scale], "lr": self.base_lr}
+            )
         if hasattr(self.net, "scratch"):
             print("Found output scratch")
             params_list.append(
@@ -149,7 +222,18 @@ class LSegmentationModule(pl.LightningModule):
                 {"params": self.net.scale4_conv.parameters(), "lr": self.base_lr * 10}
             )
 
-        if self.other_kwargs["midasproto"]:
+        if self.other_kwargs["constantadam"]:
+            print("Using AdamW optimization protocol")
+            opt = torch.optim.AdamW(
+                params_list,
+                lr=self.base_lr,
+                betas=(0.9, 0.999),
+                weight_decay=self.other_kwargs["weight_decay"],
+            )
+            sch = torch.optim.lr_scheduler.LambdaLR(
+                opt, lambda x: 1.
+            )
+        elif self.other_kwargs["midasproto"]:
             print("Using midas optimization protocol")
             
             opt = torch.optim.Adam(
@@ -161,7 +245,6 @@ class LSegmentationModule(pl.LightningModule):
             sch = torch.optim.lr_scheduler.LambdaLR(
                 opt, lambda x: pow(1.0 - x / self.epochs, 0.9)
             )
-
         else:
             opt = torch.optim.SGD(
                 params_list,
@@ -172,6 +255,8 @@ class LSegmentationModule(pl.LightningModule):
             sch = torch.optim.lr_scheduler.LambdaLR(
                 opt, lambda x: pow(1.0 - x / self.epochs, 0.9)
             )
+        print(opt)
+        print(sch)
         return [opt], [sch]
 
     def train_dataloader(self):
@@ -209,12 +294,14 @@ class LSegmentationModule(pl.LightningModule):
         )
 
         self.num_classes = dset.num_class
-        self.train_accuracy = pl.metrics.Accuracy()
+        # self.train_accuracy = pl.metrics.Accuracy()
+        self.train_accuracy = torchmetrics.Accuracy()
 
         return dset
 
     def get_valset(self, dset, augment=False, **kwargs):
-        self.val_accuracy = pl.metrics.Accuracy()
+        # self.val_accuracy = pl.metrics.Accuracy()
+        self.val_accuracy = torchmetrics.Accuracy()
         self.val_iou = SegmentationMetric(self.num_classes)
 
         if augment == True:
@@ -286,6 +373,9 @@ class LSegmentationModule(pl.LightningModule):
 
         parser.add_argument(
             "--midasproto", action="store_true", default=False, help="midasprotocol"
+        )
+        parser.add_argument(
+            "--constantadam", action="store_true", default=False, help="constant adam"
         )
 
         parser.add_argument(

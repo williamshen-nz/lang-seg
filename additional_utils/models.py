@@ -16,6 +16,7 @@ from torch.cuda.amp import autocast
 from torch._utils import ExceptionWrapper
 
 up_kwargs = {'mode': 'bilinear', 'align_corners': True}
+# up_kwargs = {'mode': 'bilinear', 'align_corners': False}
 
 __all__ = ['LSeg_MultiEvalModule']
 

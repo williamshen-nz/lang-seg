@@ -16,6 +16,7 @@ from torch.cuda.amp import autocast
 from torch._utils import ExceptionWrapper
 
 up_kwargs = {'mode': 'bilinear', 'align_corners': True}
+# up_kwargs = {'mode': 'bilinear', 'align_corners': False}
 
 __all__ = ['MultiEvalModule']
 
@@ -41,17 +42,31 @@ class MultiEvalModule(DataParallel):
         inputs = [(input.unsqueeze(0).cuda(device),)
                   for input, device in zip(inputs, self.device_ids)]
         replicas = self.replicate(self, self.device_ids[:len(inputs)])
-        kwargs = scatter(kwargs, target_gpus, dim) if kwargs else []
+        # kwargs = scatter(kwargs, target_gpus, dim) if kwargs else []
+        # no target_gpus variable
         if len(inputs) < len(kwargs):
             inputs.extend([() for _ in range(len(kwargs) - len(inputs))])
         elif len(kwargs) < len(inputs):
-            kwargs.extend([{} for _ in range(len(inputs) - len(kwargs))])
+            # print(kwargs)
+            kwargs = [kwargs]
+            # print(kwargs)
+            # kwargs.extend([{} for _ in range(len(inputs) - len(kwargs))])
+            # kwargs.update([{} for _ in range(len(inputs) - len(kwargs))])
+            # print(len(inputs), len(kwargs), "---")
+            # kwargs = [kwargs for _ in range(len(inputs) - len(kwargs))]
+
+            #{}
+            #[0]
+            #1 1
+            #1 1 ---
+        else:
+            kwargs = [kwargs]
         outputs = self.parallel_apply(replicas, inputs, kwargs)
         #for out in outputs:
         #    print('out.size()', out.size())
         return outputs
 
-    def forward(self, image):
+    def forward(self, image, return_feature=False):
         """Mult-size Evaluation"""
         # only single image is supported for evaluation
         batch, _, h, w = image.size()
@@ -60,7 +75,8 @@ class MultiEvalModule(DataParallel):
         crop_size = self.crop_size
         stride = int(crop_size * stride_rate)
         with torch.cuda.device_of(image):
-            scores = image.new().resize_(batch,self.nclass,h,w).zero_().cuda()
+            # scores = image.new().resize_(batch,self.nclass,h,w).zero_().cuda()
+            scores = image.new().resize_(batch,1,h,w).zero_().cuda()  # broadcastable for n_class or d_feature_dim
 
         for scale in self.scales:
             long_size = int(math.ceil(self.base_size * scale))
@@ -88,7 +104,7 @@ class MultiEvalModule(DataParallel):
             if long_size <= crop_size:
                 pad_img = pad_image(cur_img, self.module.mean,
                                     self.module.std, crop_size)
-                outputs = module_inference(self.module, pad_img, self.flip)
+                outputs = module_inference(self.module, pad_img, self.flip, return_feature=return_feature)
                 outputs = crop_image(outputs, 0, height, 0, width)
             else:
                 if short_size < crop_size:
@@ -103,7 +119,8 @@ class MultiEvalModule(DataParallel):
                 h_grids = int(math.ceil(1.0 * (ph-crop_size)/stride)) + 1
                 w_grids = int(math.ceil(1.0 * (pw-crop_size)/stride)) + 1
                 with torch.cuda.device_of(image):
-                    outputs = image.new().resize_(batch,self.nclass,ph,pw).zero_().cuda()
+                    # outputs = image.new().resize_(batch,self.nclass,ph,pw).zero_().cuda()
+                    outputs = image.new().resize_(batch,1,ph,pw).zero_().cuda()
                     count_norm = image.new().resize_(batch,1,ph,pw).zero_().cuda()
                 # grid evaluation
                 for idh in range(h_grids):
@@ -116,26 +133,31 @@ class MultiEvalModule(DataParallel):
                         # pad if needed
                         pad_crop_img = pad_image(crop_img, self.module.mean,
                                                  self.module.std, crop_size)
-                        output = module_inference(self.module, pad_crop_img, self.flip)
-                        outputs[:,:,h0:h1,w0:w1] += crop_image(output,
-                            0, h1-h0, 0, w1-w0)
+                        output = module_inference(self.module, pad_crop_img, self.flip, return_feature=return_feature)
+                        # outputs[:,:,h0:h1,w0:w1] += crop_image(output,
+                        #                            0, h1-h0, 0, w1-w0)
+                        if outputs.shape[1] == 1:
+                            outputs = outputs.expand(outputs.shape[0], output.shape[1], outputs.shape[2], outputs.shape[3]).clone()
+                        outputs[:,:,h0:h1,w0:w1] += crop_image(output, 0, h1-h0, 0, w1-w0)
                         count_norm[:,:,h0:h1,w0:w1] += 1
                 assert((count_norm==0).sum()==0)
                 outputs = outputs / count_norm
                 outputs = outputs[:,:,:height,:width]
 
             score = resize_image(outputs, h, w, **self.module._up_kwargs)
-            scores += score
+            # scores += score
+            scores = scores + score
 
         return scores
 
 
-def module_inference(module, image, flip=True):
-    output = module.evaluate(image)
+def module_inference(module, image, flip=True, return_feature=False):
+    output = module.evaluate(image, return_feature=return_feature)
     if flip:
         fimg = flip_image(image)
-        foutput = module.evaluate(fimg)
+        foutput = module.evaluate(fimg, return_feature=return_feature)
         output += flip_image(foutput)
+        output = output / 2
     return output
 
 def resize_image(img, h, w, **up_kwargs):

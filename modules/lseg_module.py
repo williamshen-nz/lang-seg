@@ -52,19 +52,24 @@ class LSegModule(LSegmentationModule):
         self.train_transform = transforms.Compose(train_transform)
         self.val_transform = transforms.Compose(val_transform)
 
-        self.trainset = self.get_trainset(
-            dataset,
-            augment=kwargs["augment"],
-            base_size=self.base_size,
-            crop_size=self.crop_size,
-        )
-        
-        self.valset = self.get_valset(
-            dataset,
-            augment=kwargs["augment"],
-            base_size=self.base_size,
-            crop_size=self.crop_size,
-        )
+        if dataset == "ignore":
+            self.trainset = None
+            self.valset = None
+            self.criterion = None
+        else:
+            self.trainset = self.get_trainset(
+                dataset,
+                augment=kwargs["augment"],
+                base_size=self.base_size,
+                crop_size=self.crop_size,
+            )
+            self.valset = self.get_valset(
+                dataset,
+                augment=kwargs["augment"],
+                base_size=self.base_size,
+                crop_size=self.crop_size,
+            )
+            self.criterion = self.get_criterion(**kwargs)
 
         use_batchnorm = (
             (not kwargs["no_batchnorm"]) if "no_batchnorm" in kwargs else True
@@ -92,11 +97,10 @@ class LSegModule(LSegmentationModule):
         self.mean = norm_mean
         self.std = norm_std
 
-        self.criterion = self.get_criterion(**kwargs)
-
     def get_labels(self, dataset):
         labels = []
-        path = 'label_files/{}_objectInfo150.txt'.format(dataset)
+        module_path = os.path.dirname(__file__)
+        path = '{}/../label_files/{}_objectInfo150.txt'.format(module_path, dataset)
         assert os.path.exists(path), '*** Error : {} not exist !!!'.format(path)
         f = open(path, 'r') 
         lines = f.readlines()      

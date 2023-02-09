@@ -121,6 +121,7 @@ class LSeg(BaseModel):
             "clipRN50x16_vitl16_384": [5, 11, 17, 23],
             "clip_vitb32_384": [2, 5, 8, 11],
         }
+        self.preresize = None
 
         # Instantiate backbone and reassemble blocks
         self.clip_pretrained, self.pretrained, self.scratch = _make_encoder(
@@ -157,7 +158,7 @@ class LSeg(BaseModel):
 
         self.text = clip.tokenize(self.labels)    
         
-    def forward(self, x, labelset=''):
+    def forward(self, x, labelset='', return_feature=False):
         if labelset == '':
             text = self.text
         else:
@@ -166,7 +167,7 @@ class LSeg(BaseModel):
         if self.channels_last == True:
             x.contiguous(memory_format=torch.channels_last)
 
-        layer_1, layer_2, layer_3, layer_4 = forward_vit(self.pretrained, x)
+        layer_1, layer_2, layer_3, layer_4 = forward_vit(self.pretrained, x, preresize=self.preresize)
 
         layer_1_rn = self.scratch.layer1_rn(layer_1)
         layer_2_rn = self.scratch.layer2_rn(layer_2)
@@ -185,12 +186,26 @@ class LSeg(BaseModel):
         image_features = self.scratch.head1(path_1)
 
         imshape = image_features.shape
+        if return_feature:
+            # image_features = self.scratch.output_conv(nn.functional.normalize(image_features, dim=1)) # ->nchw
+            # image_features = self.scratch.output_conv(image_features) # ->nchw
+            image_features = nn.functional.normalize(self.scratch.output_conv(image_features), dim=1) # ->nchw
+            return image_features
+
         image_features = image_features.permute(0,2,3,1).reshape(-1, self.out_c)
 
         # normalized features
         image_features = image_features / image_features.norm(dim=-1, keepdim=True)
         text_features = text_features / text_features.norm(dim=-1, keepdim=True)
-        
+
+        """ for clip-based
+        logits_per_image = torch.exp(self.logit_scale) * (image_features @ text_features.t().to(image_features.dtype))
+        logits_per_image = torch.cat(
+            [logits_per_image[..., :1].detach() * 0.0 + self.logit_other_threshold, logits_per_image[..., 1:]], dim=-1
+        )
+        out = logits_per_image.float().view(imshape[0], imshape[2], imshape[3], -1).permute(0,3,1,2)
+        """
+
         logits_per_image = self.logit_scale * image_features.half() @ text_features.t()
 
         out = logits_per_image.float().view(imshape[0], imshape[2], imshape[3], -1).permute(0,3,1,2)
